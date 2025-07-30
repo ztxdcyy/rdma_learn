@@ -270,7 +270,7 @@ int on_event(struct rdma_cm_event *event)
   if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST)
     r = on_connect_request(event->id);
   else if (event->event == RDMA_CM_EVENT_ESTABLISHED)
-//    r = on_connection(event->id->context);
+    // r = on_connection(event->id->context);
     r = 0;
   else if (event->event == RDMA_CM_EVENT_DISCONNECTED)
     r = on_disconnect(event->id);

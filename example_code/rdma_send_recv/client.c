@@ -215,6 +215,10 @@ void on_completion(struct ibv_wc *wc)
 {
   struct connection *conn = (struct connection *)(uintptr_t)wc->wr_id;
 
+  printf("wc->status = %d (%s)\n", wc->status, ibv_wc_status_str(wc->status));
+
+  if (wc->status == IBV_WC_WR_FLUSH_ERR) return;
+
   if (wc->status != IBV_WC_SUCCESS)
     die("on_completion: status is not IBV_WC_SUCCESS.");
 
