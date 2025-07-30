@@ -9,11 +9,10 @@ APPS    := server client
 all: ${APPS}
 
 client: client.o
-        ${LD} -o $@ $^ ${LDLIBS}
+	${LD} -o $@ $^ ${LDLIBS}
 
 server: server.o
-        ${LD} -o $@ $^ ${LDLIBS}
-
+	${LD} -o $@ $^ ${LDLIBS}
 
 clean:
-        rm -f ${APPS}
+	rm -f ${APPS}

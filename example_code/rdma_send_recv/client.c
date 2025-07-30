@@ -11,8 +11,17 @@
 const int BUFFER_SIZE = 1024;
 const int TIMEOUT_IN_MS = 500; /* ms */
 
+/*
+context结构体由若干结构体组成，包括ibv_context上下文（ibv是ib的用户态的接口，ib verbs。除了用户态还有内核态，内核态接口就是ib_xxx）
+PD：protected region 保护区域，防止被操作系统swap这部分物理内存。换句话说，就是绑定了物理地址和虚拟地址
+Work Queue(WQ): 工作队列，在发送过程中 WQ =  SQ; 在接收过程中WQ = WQ;
+CQ：Complete Queue，完成队列，WQ完成之后会生成一个完成事件CQE，先进先出的存在CQ里面。之后，CQ用于告诉用户WQ上的消息已经被处理完成；
+Completion Channel：完成通道，用于让内核/驱动通过事件通知（event notification）的方式告知用户空间“完成队列（CQ）有新事件”，代替了传统的轮询模式。
+cq_poller_thread：CQ轮询线程，独立线程负责监听 comp_channel 上的事件通知，并在有事件时调用 ibv_poll_cq 获取并处理所有“完成项（Work Completion, WC）”。
+*/
+
 struct context {
-  struct ibv_context *ctx;
+  struct ibv_context *ctx;    
   struct ibv_pd *pd;
   struct ibv_cq *cq;
   struct ibv_comp_channel *comp_channel;
@@ -195,7 +204,7 @@ int on_addr_resolved(struct rdma_cm_id *id)
   conn->num_completions = 0;
 
   register_memory(conn);
-  //post_receives(conn);
+  post_receives(conn);
 
   TEST_NZ(rdma_resolve_route(id, TIMEOUT_IN_MS));
 

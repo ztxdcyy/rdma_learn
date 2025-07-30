@@ -175,15 +175,18 @@ void register_memory(struct connection *conn)
 
 void on_completion(struct ibv_wc *wc)
 {
+  // 1. 检查本次完成事件状态是否正常（成功）
   if (wc->status != IBV_WC_SUCCESS)
     die("on_completion: status is not IBV_WC_SUCCESS.");
 
+  // 2. 判断是接收完成事件（RECV），还是发送完成事件（SEND）
   if (wc->opcode & IBV_WC_RECV) {
     struct connection *conn = (struct connection *)(uintptr_t)wc->wr_id;
-
+    // 2.1. 如果是RECV，输出收到的消息内容
     printf("received message: %s\n", conn->recv_region);
 
   } else if (wc->opcode == IBV_WC_SEND) {
+    // 2.2. 如果是SEND，输出“发送完成”
     printf("send completed successfully.\n");
   }
 }
