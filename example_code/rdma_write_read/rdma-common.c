@@ -181,8 +181,13 @@ void on_completion(struct ibv_wc *wc)
 {
   struct connection *conn = (struct connection *)(uintptr_t)wc->wr_id;
 
-  if (wc->status != IBV_WC_SUCCESS)
-    die("on_completion: status is not IBV_WC_SUCCESS.");
+  printf("wc->status = %d (%s)\n", wc->status, ibv_wc_status_str(wc->status));
+
+  // if (wc->status != IBV_WC_SUCCESS)
+  //   die("on_completion: status is not IBV_WC_SUCCESS.");
+
+  if (wc->status == IBV_WC_SUCCESS)
+    printf("wc->status = %d (%s)\nDo we success?", wc->status, ibv_wc_status_str(wc->status));
 
   if (wc->opcode & IBV_WC_RECV) {
     conn->recv_state++;
