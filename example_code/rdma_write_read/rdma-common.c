@@ -182,7 +182,8 @@ void on_completion(struct ibv_wc *wc)
   struct connection *conn = (struct connection *)(uintptr_t)wc->wr_id;
 
   if (wc->status != IBV_WC_SUCCESS)
-    die("on_completion: status is not IBV_WC_SUCCESS.");
+    // die("on_completion: status is not IBV_WC_SUCCESS.");
+    return;
 
   if (wc->opcode & IBV_WC_RECV) {
     conn->recv_state++;
@@ -201,74 +202,38 @@ void on_completion(struct ibv_wc *wc)
   }
 
   if (conn->send_state == SS_MR_SENT && conn->recv_state == RS_MR_RECV) {
-        struct ibv_send_wr wr, *bad_wr = NULL;
-        struct ibv_sge sge;
+    struct ibv_send_wr wr, *bad_wr = NULL;
+    struct ibv_sge sge;
 
-        if (s_mode == M_WRITE)
-            printf("received MSG_MR. writing message to remote memory...\n");
-        else
-            printf("received MSG_MR. reading message from remote memory...\n");
+    if (s_mode == M_WRITE)
+      printf("received MSG_MR. writing message to remote memory...\n");
+    else
+      printf("received MSG_MR. reading message from remote memory...\n");
 
-        memset(&wr, 0, sizeof(wr));
-        wr.wr_id = (uintptr_t)conn;
-        wr.opcode = (s_mode == M_WRITE) ? IBV_WR_RDMA_WRITE : IBV_WR_RDMA_READ;
-        wr.sg_list = &sge;
-        wr.num_sge = 1;
-        wr.send_flags = IBV_SEND_SIGNALED;
-        wr.wr.rdma.remote_addr = (uintptr_t)conn->peer_mr.addr;
-        wr.wr.rdma.rkey = conn->peer_mr.rkey;
+    memset(&wr, 0, sizeof(wr));
 
-        sge.addr = (uintptr_t)conn->rdma_local_region;
-        sge.length = RDMA_BUFFER_SIZE;
-        sge.lkey = conn->rdma_local_mr->lkey;
+    wr.wr_id = (uintptr_t)conn;
+    wr.opcode = (s_mode == M_WRITE) ? IBV_WR_RDMA_WRITE : IBV_WR_RDMA_READ;
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+    wr.send_flags = IBV_SEND_SIGNALED;
+    wr.wr.rdma.remote_addr = (uintptr_t)conn->peer_mr.addr;
+    wr.wr.rdma.rkey = conn->peer_mr.rkey;
 
-        TEST_NZ(ibv_post_send(conn->qp, &wr, &bad_wr));
-    }
-    // RDMA写/读完成后再发MSG_DONE
-    else if (conn->send_state == SS_RDMA_SENT) {
-        conn->send_msg->type = MSG_DONE;
-        send_message(conn);
-    }
-    // 收到对方 MSG_DONE，再打印 buffer
-    else if (conn->send_state == SS_DONE_SENT && conn->recv_state == RS_DONE_RECV) {
-        printf("remote buffer: %s\n", get_peer_message_region(conn));
-        rdma_disconnect(conn->id);
-    }
+    sge.addr = (uintptr_t)conn->rdma_local_region;
+    sge.length = RDMA_BUFFER_SIZE;
+    sge.lkey = conn->rdma_local_mr->lkey;
+
+    TEST_NZ(ibv_post_send(conn->qp, &wr, &bad_wr));
+
+    conn->send_msg->type = MSG_DONE;
+    send_message(conn);
+
+  } else if (conn->send_state == SS_DONE_SENT && conn->recv_state == RS_DONE_RECV) {
+    printf("remote buffer: %s\n", get_peer_message_region(conn));
+    rdma_disconnect(conn->id);
+  }
 }
-
-//   if (conn->send_state == SS_MR_SENT && conn->recv_state == RS_MR_RECV) {
-//     struct ibv_send_wr wr, *bad_wr = NULL;
-//     struct ibv_sge sge;
-
-//     if (s_mode == M_WRITE)
-//       printf("received MSG_MR. writing message to remote memory...\n");
-//     else
-//       printf("received MSG_MR. reading message from remote memory...\n");
-
-//     memset(&wr, 0, sizeof(wr));
-
-//     wr.wr_id = (uintptr_t)conn;
-//     wr.opcode = (s_mode == M_WRITE) ? IBV_WR_RDMA_WRITE : IBV_WR_RDMA_READ;
-//     wr.sg_list = &sge;
-//     wr.num_sge = 1;
-//     wr.send_flags = IBV_SEND_SIGNALED;
-//     wr.wr.rdma.remote_addr = (uintptr_t)conn->peer_mr.addr;
-//     wr.wr.rdma.rkey = conn->peer_mr.rkey;
-
-//     sge.addr = (uintptr_t)conn->rdma_local_region;
-//     sge.length = RDMA_BUFFER_SIZE;
-//     sge.lkey = conn->rdma_local_mr->lkey;
-
-//     TEST_NZ(ibv_post_send(conn->qp, &wr, &bad_wr));
-
-//     conn->send_msg->type = MSG_DONE;
-//     send_message(conn);
-
-//   } else if (conn->send_state == SS_DONE_SENT && conn->recv_state == RS_DONE_RECV) {
-//     printf("remote buffer: %s\n", get_peer_message_region(conn));
-//     rdma_disconnect(conn->id);
-//   }
-// }
 
 void on_connect(void *context)
 {
