@@ -63,7 +63,7 @@ int main(int argc, char **argv)
 
   TEST_NZ(getaddrinfo(argv[1], argv[2], NULL, &addr));
 
-  TEST_Z(ec = rdma_create_event_channel());
+  TEST_Z(ec = rdma_create_event_channel());       // RDMA 事件管道
   TEST_NZ(rdma_create_id(ec, &conn, NULL, RDMA_PS_TCP));
   TEST_NZ(rdma_resolve_addr(conn, NULL, addr->ai_addr, TIMEOUT_IN_MS));
 
@@ -75,7 +75,7 @@ int main(int argc, char **argv)
     memcpy(&event_copy, event, sizeof(*event));
     rdma_ack_cm_event(event);
 
-    if (on_event(&event_copy))
+    if (on_event(&event_copy))    // hot loop
       break;
   }
 
@@ -192,16 +192,16 @@ int on_addr_resolved(struct rdma_cm_id *id)
   build_context(id->verbs);
   build_qp_attr(&qp_attr);
 
-  TEST_NZ(rdma_create_qp(id, s_ctx->pd, &qp_attr));
+  TEST_NZ(rdma_create_qp(id, s_ctx->pd, &qp_attr));   // 创建rdma qp
 
   id->context = conn = (struct connection *)malloc(sizeof(struct connection));
-
+  // 初始化conn结构体
   conn->id = id;
   conn->qp = id->qp;
   conn->num_completions = 0;
 
-  register_memory(conn);
-  post_receives(conn);
+  register_memory(conn);    // 根据conn注册buffer
+  post_receives(conn);      // 软件下发任务给硬件
 
   TEST_NZ(rdma_resolve_route(id, TIMEOUT_IN_MS));
 
@@ -236,7 +236,9 @@ int on_connection(void *context)
   struct ibv_send_wr wr, *bad_wr = NULL;
   struct ibv_sge sge;
 
-  snprintf(conn->send_region, BUFFER_SIZE, "message from active/client side with pid %d", getpid());
+  // snprintf(conn->send_region, BUFFER_SIZE, "message from active/client side with pid %d", getpid());
+  // snprintf 向指定char buffer 写入指定字符串
+  snprintf(conn->send_region, BUFFER_SIZE, "你好，我在测试RDMA SEND DEMO，可以看到我的消息吗？");
 
   printf("connected. posting send...\n");
 
