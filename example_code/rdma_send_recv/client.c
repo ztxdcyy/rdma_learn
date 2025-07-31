@@ -5,20 +5,12 @@
 #include <unistd.h>
 #include <rdma/rdma_cma.h>
 
+// TEST_NZ表达式x的返回值是否非零，非零就调用die；TEST_Z 表达式x返回0就调用die
 #define TEST_NZ(x) do { if ( (x)) die("error: " #x " failed (returned non-zero)." ); } while (0)
 #define TEST_Z(x)  do { if (!(x)) die("error: " #x " failed (returned zero/null)."); } while (0)
 
 const int BUFFER_SIZE = 1024;
 const int TIMEOUT_IN_MS = 500; /* ms */
-
-/*
-context结构体由若干结构体组成，包括ibv_context上下文（ibv是ib的用户态的接口，ib verbs。除了用户态还有内核态，内核态接口就是ib_xxx）
-PD：protected region 保护区域，防止被操作系统swap这部分物理内存。换句话说，就是绑定了物理地址和虚拟地址
-Work Queue(WQ): 工作队列，在发送过程中 WQ =  SQ; 在接收过程中WQ = WQ;
-CQ：Complete Queue，完成队列，WQ完成之后会生成一个完成事件CQE，先进先出的存在CQ里面。之后，CQ用于告诉用户WQ上的消息已经被处理完成；
-Completion Channel：完成通道，用于让内核/驱动通过事件通知（event notification）的方式告知用户空间“完成队列（CQ）有新事件”，代替了传统的轮询模式。
-cq_poller_thread：CQ轮询线程，独立线程负责监听 comp_channel 上的事件通知，并在有事件时调用 ibv_poll_cq 获取并处理所有“完成项（Work Completion, WC）”。
-*/
 
 struct context {
   struct ibv_context *ctx;    
@@ -135,14 +127,19 @@ void build_qp_attr(struct ibv_qp_init_attr *qp_attr)
 
 void * poll_cq(void *ctx)
 {
-  struct ibv_cq *cq;
-  struct ibv_wc wc;
+  struct ibv_cq *cq;      // 完成队列
+  struct ibv_wc wc;       // wc事件
 
   while (1) {
+    // 1. 阻塞等待 网卡/内核 通知有新CQ事件（高效事件，不轮询CPU）【如果 CQ 没有新事件，函数会挂起线程，直到内核/驱动检测到有 CQE 到来时才返回。】
     TEST_NZ(ibv_get_cq_event(s_ctx->comp_channel, &cq, &ctx));
+    // 2. 用户态ACK告知内核：确认CQ事件已处理，防止事件丢失
     ibv_ack_cq_events(cq, 1);
+    //3. RDMA CQ 的通知是边沿触发（edge-triggered）：只有从“无事件”到“有事件”这个转变时才会通知。假如不重新置零的话，一直都保持有事件状态，无法进行触发，也就不能正确注册CQE了
     TEST_NZ(ibv_req_notify_cq(cq, 0));
 
+    // 4. 非阻塞轮询CQ，批量获取已完成的所有操作，每个CQE交on_completion处理
+    // int ibv_poll_cq(struct ibv_cq *cq, int num_entries, struct ibv_wc *wc);成功时返回wc的数量，没有wc的时候返回0.在这里也就退出while循环了，失败时候返回-1
     while (ibv_poll_cq(cq, 1, &wc))
       on_completion(&wc);
   }
