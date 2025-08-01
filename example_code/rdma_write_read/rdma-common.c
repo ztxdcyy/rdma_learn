@@ -227,6 +227,15 @@ void on_completion(struct ibv_wc *wc)
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_SIGNALED;
+// === RDMA关键debug建议与注释 ===
+// 1. 在RDMA操作前后，强烈建议打印peer_mr、rdma_local_mr、buffer地址、rkey、lkey等，确保MR信息完全同步
+    printf("[DEBUG] About to post RDMA %s\n", (s_mode == M_WRITE) ? "WRITE" : "READ");
+    printf("[DEBUG] peer_mr.addr=0x%lx, peer_mr.rkey=0x%x\n", (unsigned long)conn->peer_mr.addr, conn->peer_mr.rkey);
+    printf("[DEBUG] local_region=0x%lx, lkey=0x%x\n", (unsigned long)conn->rdma_local_region, conn->rdma_local_mr->lkey);
+// 2. 建议在memcpy同步MR结构体后，立即打印rec_msg->data.mr和本地rdma_remote_mr所有字段，比对两端MR内容
+// 3. RDMA操作flush错误大概率是MR没有正确同步，或者buffer权限/长度/地址不匹配
+// 4. 发生flush时，不要直接die，建议打印所有MR、buffer指针和长度，辅助定位
+// 5. 若怀疑消息时序有问题，也可在send_mr、recv MR逻辑（如memcpy、send_message前后）加printf全流程跟踪
     wr.wr.rdma.remote_addr = (uintptr_t)conn->peer_mr.addr;
     wr.wr.rdma.rkey = conn->peer_mr.rkey;
 

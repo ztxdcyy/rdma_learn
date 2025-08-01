@@ -258,7 +258,7 @@ int on_disconnect(struct rdma_cm_id *id)
 
   free(conn);
 
-  rdma_destroy_id(id);
+  rdma_destroy_id(id);      // 销毁本次通信双方的rdma链接，包括释放上面的资源，qp，mr，buffer等
 
   return 0;
 }
@@ -270,8 +270,8 @@ int on_event(struct rdma_cm_event *event)
   if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST)
     r = on_connect_request(event->id);
   else if (event->event == RDMA_CM_EVENT_ESTABLISHED)
-    // r = on_connection(event->id->context);
-    r = 0;
+    r = on_connection(event->id->context);
+    // r = 0;
   else if (event->event == RDMA_CM_EVENT_DISCONNECTED)
     r = on_disconnect(event->id);
   else

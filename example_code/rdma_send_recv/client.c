@@ -214,7 +214,7 @@ void on_completion(struct ibv_wc *wc)
 
   printf("wc->status = %d (%s)\n", wc->status, ibv_wc_status_str(wc->status));
 
-  if (wc->status == IBV_WC_WR_FLUSH_ERR) return;
+  // if (wc->status == IBV_WC_WR_FLUSH_ERR) return;
 
   if (wc->status != IBV_WC_SUCCESS)
     die("on_completion: status is not IBV_WC_SUCCESS.");
@@ -226,7 +226,7 @@ void on_completion(struct ibv_wc *wc)
   else
     die("on_completion: completion isn't a send or a receive.");
 
-  if (++conn->num_completions == 1)
+  if (++conn->num_completions == 1)   //只会发送一条消息
     rdma_disconnect(conn->id);
 }
 
