@@ -115,7 +115,7 @@ void build_context(struct ibv_context *verbs)
   TEST_Z(s_ctx->cq = ibv_create_cq(s_ctx->ctx, 10, NULL, s_ctx->comp_channel, 0)); /* cqe=10 is arbitrary */
   TEST_NZ(ibv_req_notify_cq(s_ctx->cq, 0));
 
-  TEST_NZ(pthread_create(&s_ctx->cq_poller_thread, NULL, poll_cq, NULL));
+  TEST_NZ(pthread_create(&s_ctx->cq_poller_thread, NULL, poll_cq, NULL));   // 创造一个线程，对completion queue持续进行poll
 }
 
 void build_params(struct rdma_conn_param *params)
@@ -143,6 +143,7 @@ void build_qp_attr(struct ibv_qp_init_attr *qp_attr)
 void destroy_connection(void *context)
 {
   struct connection *conn = (struct connection *)context;
+  printf("[LOG] destroy_connection called for conn=%p, id=%p\n", conn, conn ? conn->id : NULL);
 
   rdma_destroy_qp(conn->id);
 
@@ -181,9 +182,18 @@ void on_completion(struct ibv_wc *wc)
 {
   struct connection *conn = (struct connection *)(uintptr_t)wc->wr_id;
 
+  fprintf(stderr,
+    "[on_completion] wr_id=0x%lx, status=%d (%s), opcode=%d, send_state=%d, recv_state=%d\n",
+    wc->wr_id,
+    wc->status,
+    ibv_wc_status_str(wc->status),
+    wc->opcode,
+    conn ? conn->send_state : -1,
+    conn ? conn->recv_state : -1);
+  
   if (wc->status != IBV_WC_SUCCESS)
-    // die("on_completion: status is not IBV_WC_SUCCESS.");
-    return;
+    die("on_completion: status is not IBV_WC_SUCCESS.");
+    // return;
 
   if (wc->opcode & IBV_WC_RECV) {
     conn->recv_state++;
@@ -230,6 +240,7 @@ void on_completion(struct ibv_wc *wc)
     send_message(conn);
 
   } else if (conn->send_state == SS_DONE_SENT && conn->recv_state == RS_DONE_RECV) {
+    printf("[LOG] %s: Both DONE, calling rdma_disconnect(conn->id)\n", (s_mode == M_WRITE) ? "WRITE" : "READ");
     printf("remote buffer: %s\n", get_peer_message_region(conn));
     rdma_disconnect(conn->id);
   }

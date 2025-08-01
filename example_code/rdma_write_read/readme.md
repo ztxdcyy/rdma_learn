@@ -25,8 +25,10 @@ send completed successfully.
 received MSG_MR. reading message from remote memory...
 on_completion: status is not IBV_WC_SUCCESS.
 ```
+
 应该是要打印出pid的，但是没看到啊
 在on_completion里面添加上了打印status code以及具体status string的代码后发现：
+
 ```
 ./rdma-client write 10.179.114.197 21606
 address resolved.
@@ -49,5 +51,6 @@ on_completion: status is not IBV_WC_SUCCESS.
 我可以通过写入地址和buffer长度做打印吗（需要从metadata中读取？）？
 
 > client RDMA write 完成后发 MSG_DONE，server 收到后打印自己的 buffer。
+
 
 # 双边的oncompletion中，当wc status是flush error的时候，return，真的是正确的吗？
