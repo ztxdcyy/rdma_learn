@@ -181,37 +181,32 @@ char * get_peer_message_region(struct connection *conn)
 void on_completion(struct ibv_wc *wc)
 {
   struct connection *conn = (struct connection *)(uintptr_t)wc->wr_id;
-
-  fprintf(stderr,
-    "[on_completion] wr_id=0x%lx, status=%d (%s), opcode=%d, send_state=%d, recv_state=%d\n",
-    wc->wr_id,
-    wc->status,
-    ibv_wc_status_str(wc->status),
-    wc->opcode,
-    conn ? conn->send_state : -1,
-    conn ? conn->recv_state : -1);
   
   if (wc->status != IBV_WC_SUCCESS)
     die("on_completion: status is not IBV_WC_SUCCESS.");
     // return;
 
-  if (wc->opcode & IBV_WC_RECV) {
+
+  // 分别处理接收和发送状态
+  if (wc->opcode & IBV_WC_RECV) {   // wc_recv
     conn->recv_state++;
 
     if (conn->recv_msg->type == MSG_MR) {
       memcpy(&conn->peer_mr, &conn->recv_msg->data.mr, sizeof(conn->peer_mr));
-      post_receives(conn); /* only rearm for MSG_MR */
+      post_receives(conn);        // ？
 
       if (conn->send_state == SS_INIT) /* received peer's MR before sending ours, so send ours back */
-        send_mr(conn);
+        send_mr(conn);            // 发送自己的MR
     }
 
-  } else {
+  } else {    // 假如我们是send方，state自加一，也就是到下一个state呗。我懂了，这里enum就是计数，enumerate。懂了！
     conn->send_state++;
     printf("send completed successfully.\n");
   }
 
+  // 核心RDMA操作
   if (conn->send_state == SS_MR_SENT && conn->recv_state == RS_MR_RECV) {
+    // 完成MR交换后，开始执行RDMA操作
     struct ibv_send_wr wr, *bad_wr = NULL;
     struct ibv_sge sge;
 
@@ -221,34 +216,29 @@ void on_completion(struct ibv_wc *wc)
       printf("received MSG_MR. reading message from remote memory...\n");
 
     memset(&wr, 0, sizeof(wr));
-
+    
+    // 构造RDMA工作请求
     wr.wr_id = (uintptr_t)conn;
     wr.opcode = (s_mode == M_WRITE) ? IBV_WR_RDMA_WRITE : IBV_WR_RDMA_READ;
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_SIGNALED;
-// === RDMA关键debug建议与注释 ===
-// 1. 在RDMA操作前后，强烈建议打印peer_mr、rdma_local_mr、buffer地址、rkey、lkey等，确保MR信息完全同步
-    printf("[DEBUG] About to post RDMA %s\n", (s_mode == M_WRITE) ? "WRITE" : "READ");
-    printf("[DEBUG] peer_mr.addr=0x%lx, peer_mr.rkey=0x%x\n", (unsigned long)conn->peer_mr.addr, conn->peer_mr.rkey);
-    printf("[DEBUG] local_region=0x%lx, lkey=0x%x\n", (unsigned long)conn->rdma_local_region, conn->rdma_local_mr->lkey);
-// 2. 建议在memcpy同步MR结构体后，立即打印rec_msg->data.mr和本地rdma_remote_mr所有字段，比对两端MR内容
-// 3. RDMA操作flush错误大概率是MR没有正确同步，或者buffer权限/长度/地址不匹配
-// 4. 发生flush时，不要直接die，建议打印所有MR、buffer指针和长度，辅助定位
-// 5. 若怀疑消息时序有问题，也可在send_mr、recv MR逻辑（如memcpy、send_message前后）加printf全流程跟踪
-    wr.wr.rdma.remote_addr = (uintptr_t)conn->peer_mr.addr;
+    wr.wr.rdma.remote_addr = (uintptr_t)conn->peer_mr.addr;       // 注意这里是远程地址
     wr.wr.rdma.rkey = conn->peer_mr.rkey;
 
     sge.addr = (uintptr_t)conn->rdma_local_region;
     sge.length = RDMA_BUFFER_SIZE;
     sge.lkey = conn->rdma_local_mr->lkey;
-
+    
+    // 执行RDMA操作，唯一的单边操作
     TEST_NZ(ibv_post_send(conn->qp, &wr, &bad_wr));
-
+    
+    // 之后发送DONE消息通知对方
     conn->send_msg->type = MSG_DONE;
     send_message(conn);
 
   } else if (conn->send_state == SS_DONE_SENT && conn->recv_state == RS_DONE_RECV) {
+    // SS Send State； RS Receive State 收发都完成之后关闭rdma链接
     printf("[LOG] %s: Both DONE, calling rdma_disconnect(conn->id)\n", (s_mode == M_WRITE) ? "WRITE" : "READ");
     printf("remote buffer: %s\n", get_peer_message_region(conn));
     rdma_disconnect(conn->id);
@@ -302,6 +292,8 @@ void register_memory(struct connection *conn)
   conn->rdma_local_region = malloc(RDMA_BUFFER_SIZE);
   conn->rdma_remote_region = malloc(RDMA_BUFFER_SIZE);
 
+  // 这里单边的，反而注册的buffer更多，因为有message，下面包含了四条：sendmsg、recvmsg、rdmalocalregion、rdmaremoteregion
+  // 在struct conn里，我们可以看到，msg都是msg类的结构体，而region就只是一个字符串
   TEST_Z(conn->send_mr = ibv_reg_mr(
     s_ctx->pd, 
     conn->send_msg, 

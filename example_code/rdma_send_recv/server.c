@@ -143,6 +143,7 @@ void post_receives(struct connection *conn)
   struct ibv_recv_wr wr, *bad_wr = NULL;
   struct ibv_sge sge;
 
+  // kaka往wr里面写东西
   wr.wr_id = (uintptr_t)conn;
   wr.next = NULL;
   wr.sg_list = &sge;
@@ -222,13 +223,14 @@ int on_connection(void *context)
   struct ibv_send_wr wr, *bad_wr = NULL;
   struct ibv_sge sge;
 
+  // 向buffer（send-region）内写入东西，超过buffersize就会被截断掉
   snprintf(conn->send_region, BUFFER_SIZE, "message from passive/server side with pid %d", getpid());
 
   printf("connected. posting send...\n");
 
   memset(&wr, 0, sizeof(wr));
 
-  wr.opcode = IBV_WR_SEND;
+  wr.opcode = IBV_WR_SEND;    // 软件下发任务给硬件，wr，类型send。完成之后硬件报告软件，wc。
   wr.sg_list = &sge;
   wr.num_sge = 1;
   wr.send_flags = IBV_SEND_SIGNALED;
@@ -267,13 +269,13 @@ int on_event(struct rdma_cm_event *event)
 {
   int r = 0;
 
-  if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST)
+  if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST)      // 当server收到连接请求事件后
     r = on_connect_request(event->id);
-  else if (event->event == RDMA_CM_EVENT_ESTABLISHED)
-    r = on_connection(event->id->context);
-    // r = 0;
-  else if (event->event == RDMA_CM_EVENT_DISCONNECTED)
-    r = on_disconnect(event->id);
+  else if (event->event == RDMA_CM_EVENT_ESTABLISHED)     // 当server收到建立事件后
+    r = on_connection(event->id->context);                    // server会向client发送一条欢迎（在这里是pid）意思就是确立连接了。（但是不写也可以的，这和TCP的三次握手的ack不一样）
+    // r = 0;                                                 // 啊我明白了，作者意思其实就是说，这个onconnection就是不重要的，有没有都行，不影响server收到client发过来的消息。
+  else if (event->event == RDMA_CM_EVENT_DISCONNECTED)    // 当server收到断开事件后
+    r = on_disconnect(event->id);                             // 执行销毁的后处理，包括释放qp、mr资源，断开本次的rdma连接等等
   else
     die("on_event: unknown event.");
 

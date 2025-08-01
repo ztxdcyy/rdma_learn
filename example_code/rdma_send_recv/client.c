@@ -250,6 +250,7 @@ int on_connection(void *context)
   wr.num_sge = 1;
   wr.send_flags = IBV_SEND_SIGNALED;
 
+  // sg_list: addr, length, lkey
   sge.addr = (uintptr_t)conn->send_region;
   sge.length = BUFFER_SIZE;
   sge.lkey = conn->send_mr->lkey;
@@ -283,14 +284,14 @@ int on_disconnect(struct rdma_cm_id *id)
 int on_event(struct rdma_cm_event *event)
 {
   int r = 0;
-
-  if (event->event == RDMA_CM_EVENT_ADDR_RESOLVED)
+  // 这边可以看到，client的event和server的event种类区别挺大，主要是角色不同
+  if (event->event == RDMA_CM_EVENT_ADDR_RESOLVED)                      // ？？
     r = on_addr_resolved(event->id);
-  else if (event->event == RDMA_CM_EVENT_ROUTE_RESOLVED)
+  else if (event->event == RDMA_CM_EVENT_ROUTE_RESOLVED)                // ？？
     r = on_route_resolved(event->id);
-  else if (event->event == RDMA_CM_EVENT_ESTABLISHED)
+  else if (event->event == RDMA_CM_EVENT_ESTABLISHED)                   // 确立建立，
     r = on_connection(event->id->context);
-  else if (event->event == RDMA_CM_EVENT_DISCONNECTED)
+  else if (event->event == RDMA_CM_EVENT_DISCONNECTED)    
     r = on_disconnect(event->id);
   else
     die("on_event: unknown event.");
