@@ -54,6 +54,8 @@ int on_addr_resolved(struct rdma_cm_id *id)
   printf("address resolved.\n");
 
   build_connection(id);
+  // get_local_message_region，返回一个char buffer的地址，用于存储格式化后的local buffer
+  // sprintf函数原型允许接收可变参数，因此getpid可以恰当的嵌入进格式化字符串。功能是：将格式化后的字符串写入指定内存buffer
   sprintf(get_local_message_region(id->context), "message from active/client side with pid %d", getpid());
   TEST_NZ(rdma_resolve_route(id, TIMEOUT_IN_MS));
 
@@ -80,6 +82,7 @@ int on_event(struct rdma_cm_event *event)
 {
   int r = 0;
 
+  // client作为主动发起链接的一方，始终需要承担解析地址和router的任务
   if (event->event == RDMA_CM_EVENT_ADDR_RESOLVED)
     r = on_addr_resolved(event->id);
   else if (event->event == RDMA_CM_EVENT_ROUTE_RESOLVED)

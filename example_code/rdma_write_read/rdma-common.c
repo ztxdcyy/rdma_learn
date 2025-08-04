@@ -15,8 +15,8 @@ struct message {
 
 struct context {
   struct ibv_context *ctx;
-  struct ibv_pd *pd;
-  struct ibv_cq *cq;
+  struct ibv_pd *pd;    // protect domian 用于资源隔离的安全机制 同一 PD 内的 QP 只能访问同组的 MR，避免未授权的跨组内存访问。
+  struct ibv_cq *cq;    // completion queue 
   struct ibv_comp_channel *comp_channel;
 
   pthread_t cq_poller_thread;
@@ -24,10 +24,11 @@ struct context {
 
 struct connection {
   struct rdma_cm_id *id;
-  struct ibv_qp *qp;
+  struct ibv_qp *qp;    // queue pair
 
   int connected;
 
+  // mr memory region 锁页 防止被操作系统换出
   struct ibv_mr *recv_mr;
   struct ibv_mr *send_mr;
   struct ibv_mr *rdma_local_mr;
@@ -162,18 +163,18 @@ void destroy_connection(void *context)
   free(conn);
 }
 
-void * get_local_message_region(void *context)
+void * get_local_message_region(void *context)      // 获取local message的目的就是打印到自己的控制台上
 {
   if (s_mode == M_WRITE)
-    return ((struct connection *)context)->rdma_local_region;
+    return ((struct connection *)context)->rdma_local_region;     // 对于write模式来说，local-message就是来自于local region里的东西
   else
-    return ((struct connection *)context)->rdma_remote_region;
+    return ((struct connection *)context)->rdma_remote_region;    // 对于read模式来说，local-messgae就是来自于对方的remote region里的东西
 }
 
 char * get_peer_message_region(struct connection *conn)
 {
   if (s_mode == M_WRITE)
-    return conn->rdma_remote_region;
+    return conn->rdma_remote_region;          
   else
     return conn->rdma_local_region;
 }
@@ -191,15 +192,16 @@ void on_completion(struct ibv_wc *wc)
   if (wc->opcode & IBV_WC_RECV) {   // wc_recv
     conn->recv_state++;
 
-    if (conn->recv_msg->type == MSG_MR) {
+    if (conn->recv_msg->type == MSG_MR) {   // 如果收到对方的MSG_MR
       memcpy(&conn->peer_mr, &conn->recv_msg->data.mr, sizeof(conn->peer_mr));
-      post_receives(conn);        // ？
+      post_receives(conn);        // 已经收到了MSG_MR，再投递一条接收请求，准备接收下一条messagege：MSG_DONE
 
-      if (conn->send_state == SS_INIT) /* received peer's MR before sending ours, so send ours back */
-        send_mr(conn);            // 发送自己的MR
-    }
+      // 处理竞态条件，避免死锁
+      if (conn->send_state == SS_INIT) // 在收到client的msg-mr的前提下，假如server的send-state仍然是init，也就是server的mr没有发出去
+        send_mr(conn);            // 需要发送自己的MR
+    }                             // 这样的机制，确保不管谁的mr先到，双方mr都能充分交换
 
-  } else {    // 假如我们是send方，state自加一，也就是到下一个state呗。我懂了，这里enum就是计数，enumerate。懂了！
+  } else {    // 假如我们是send方，state自加一，也就是到下一个state。这里enum就是计数，enumerate。
     conn->send_state++;
     printf("send completed successfully.\n");
   }
@@ -219,14 +221,14 @@ void on_completion(struct ibv_wc *wc)
     
     // 构造RDMA工作请求
     wr.wr_id = (uintptr_t)conn;
-    wr.opcode = (s_mode == M_WRITE) ? IBV_WR_RDMA_WRITE : IBV_WR_RDMA_READ;
+    wr.opcode = (s_mode == M_WRITE) ? IBV_WR_RDMA_WRITE : IBV_WR_RDMA_READ;   // 条件？表达式1:表达式2 当条件为真的时候整体表达式 为1，否则2
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_SIGNALED;
     wr.wr.rdma.remote_addr = (uintptr_t)conn->peer_mr.addr;       // 注意这里是远程地址
     wr.wr.rdma.rkey = conn->peer_mr.rkey;
 
-    sge.addr = (uintptr_t)conn->rdma_local_region;
+    sge.addr = (uintptr_t)conn->rdma_local_region;          // 在rdma操作中，数据源总是rdma_local_region。但是在读写模式下，里面填充的内容不同。写模式下填充的是get_local_message_region；读模式下填充的是get_peer_message_region
     sge.length = RDMA_BUFFER_SIZE;
     sge.lkey = conn->rdma_local_mr->lkey;
     
@@ -240,7 +242,7 @@ void on_completion(struct ibv_wc *wc)
   } else if (conn->send_state == SS_DONE_SENT && conn->recv_state == RS_DONE_RECV) {
     // SS Send State； RS Receive State 收发都完成之后关闭rdma链接
     printf("[LOG] %s: Both DONE, calling rdma_disconnect(conn->id)\n", (s_mode == M_WRITE) ? "WRITE" : "READ");
-    printf("remote buffer: %s\n", get_peer_message_region(conn));
+    printf("remote buffer: %s\n", get_peer_message_region(conn));         // write模式，peer指的是查看对方接收到的数据；read 模式，peer指的是查看对方发送的数据。总之都是对端的数据
     rdma_disconnect(conn->id);
   }
 }
