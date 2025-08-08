@@ -255,7 +255,7 @@ int on_connection(void *context)
   sge.length = BUFFER_SIZE;
   sge.lkey = conn->send_mr->lkey;
 
-  TEST_NZ(ibv_post_send(conn->qp, &wr, &bad_wr));
+  TEST_NZ(ibv_post_send(conn->qp, &wr, &bad_wr));         // 这里只需要做一次发送即可，包含了lkey addr length。而双边中的这些信息是在rdma单边操作前事先交换的。
 
   return 0;
 }

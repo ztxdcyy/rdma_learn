@@ -166,7 +166,7 @@ void destroy_connection(void *context)
 void * get_local_message_region(void *context)      // 获取local message的目的就是打印到自己的控制台上
 {
   if (s_mode == M_WRITE)
-    return ((struct connection *)context)->rdma_local_region;     // 对于write模式来说，local-message就是来自于local region里的东西
+    return ((struct connection *)context)->rdma_local_region;     // 对于write模式来说，local-message 就是来自于local region里的东西
   else
     return ((struct connection *)context)->rdma_remote_region;    // 对于read模式来说，local-messgae就是来自于对方的remote region里的东西
 }
@@ -185,16 +185,17 @@ void on_completion(struct ibv_wc *wc)
   
   if (wc->status != IBV_WC_SUCCESS)
     die("on_completion: status is not IBV_WC_SUCCESS.");
-    // return;
-
 
   // 分别处理接收和发送状态
   if (wc->opcode & IBV_WC_RECV) {   // wc_recv
     conn->recv_state++;
 
-    if (conn->recv_msg->type == MSG_MR) {   // 如果收到对方的MSG_MR
-      memcpy(&conn->peer_mr, &conn->recv_msg->data.mr, sizeof(conn->peer_mr));
-      post_receives(conn);        // 已经收到了MSG_MR，再投递一条接收请求，准备接收下一条messagege：MSG_DONE
+    if (conn->recv_msg->type == MSG_MR) {   // 如果收到对方的MSG_MR，在我们最开始的build_connection中，已经有一次初始post-recv了
+      // 把recv_msg中的data.mr后长度多少的内存块，复制到peer_mr
+      // 这里包含rdma_remote_mr中的rkey，来自于recv message，也就是对端的send message
+      memcpy(&conn->peer_mr, &conn->recv_msg->data.mr, sizeof(conn->peer_mr));    
+      // 已经收到了MSG_MR，再向硬件投递一条接收请求，准备接收下一条messagege：MSG_DONE
+      post_receives(conn);        
 
       // 处理竞态条件，避免死锁
       if (conn->send_state == SS_INIT) // 在收到client的msg-mr的前提下，假如server的send-state仍然是init，也就是server的mr没有发出去
@@ -225,8 +226,8 @@ void on_completion(struct ibv_wc *wc)
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_SIGNALED;
-    wr.wr.rdma.remote_addr = (uintptr_t)conn->peer_mr.addr;       // 注意这里是远程地址
-    wr.wr.rdma.rkey = conn->peer_mr.rkey;
+    wr.wr.rdma.remote_addr = (uintptr_t)conn->peer_mr.addr;       // recv收到对端的MSG_MR，将其data.mr复制到自己的peer.mr中，这里再赋值给remoteaddr
+    wr.wr.rdma.rkey = conn->peer_mr.rkey;                         // 对方的lkey就是我们的rkey，对方rdmaengine check rkey==lkey就可以发起通信
 
     sge.addr = (uintptr_t)conn->rdma_local_region;          // 在rdma操作中，数据源总是rdma_local_region。但是在读写模式下，里面填充的内容不同。写模式下填充的是get_local_message_region；读模式下填充的是get_peer_message_region
     sge.length = RDMA_BUFFER_SIZE;
@@ -242,7 +243,7 @@ void on_completion(struct ibv_wc *wc)
   } else if (conn->send_state == SS_DONE_SENT && conn->recv_state == RS_DONE_RECV) {
     // SS Send State； RS Receive State 收发都完成之后关闭rdma链接
     printf("[LOG] %s: Both DONE, calling rdma_disconnect(conn->id)\n", (s_mode == M_WRITE) ? "WRITE" : "READ");
-    printf("remote buffer: %s\n", get_peer_message_region(conn));         // write模式，peer指的是查看对方接收到的数据；read 模式，peer指的是查看对方发送的数据。总之都是对端的数据
+    printf("remote buffer: %s\n", get_peer_message_region(conn));         // 对端的数据
     rdma_disconnect(conn->id);
   }
 }
@@ -283,7 +284,7 @@ void post_receives(struct connection *conn)
   sge.length = sizeof(struct message);
   sge.lkey = conn->recv_mr->lkey;
 
-  TEST_NZ(ibv_post_recv(conn->qp, &wr, &bad_wr));
+  TEST_NZ(ibv_post_recv(conn->qp, &wr, &bad_wr));     // 接收remote message
 }
 
 void register_memory(struct connection *conn)
@@ -295,7 +296,7 @@ void register_memory(struct connection *conn)
   conn->rdma_remote_region = malloc(RDMA_BUFFER_SIZE);
 
   // 这里单边的，反而注册的buffer更多，因为有message，下面包含了四条：sendmsg、recvmsg、rdmalocalregion、rdmaremoteregion
-  // 在struct conn里，我们可以看到，msg都是msg类的结构体，而region就只是一个字符串
+  // 参数access描述了 RDMA 设备所需的内存访问属性，它可以是一个或者多个标志位的或。所有mr都允许本地写
   TEST_Z(conn->send_mr = ibv_reg_mr(
     s_ctx->pd, 
     conn->send_msg, 
@@ -306,7 +307,7 @@ void register_memory(struct connection *conn)
     s_ctx->pd, 
     conn->recv_msg, 
     sizeof(struct message), 
-    IBV_ACCESS_LOCAL_WRITE | ((s_mode == M_WRITE) ? IBV_ACCESS_REMOTE_WRITE : IBV_ACCESS_REMOTE_READ)));
+    IBV_ACCESS_LOCAL_WRITE | ((s_mode == M_WRITE) ? IBV_ACCESS_REMOTE_WRITE : IBV_ACCESS_REMOTE_READ)));    // recv_msg，当write模式，允许远程写，否则允许远程读
 
   TEST_Z(conn->rdma_local_mr = ibv_reg_mr(
     s_ctx->pd, 
@@ -348,6 +349,7 @@ void send_mr(void *context)
   struct connection *conn = (struct connection *)context;
 
   conn->send_msg->type = MSG_MR;
+  // 将自己的rdma_remote_mr（包含rkey）发送给对方
   memcpy(&conn->send_msg->data.mr, conn->rdma_remote_mr, sizeof(struct ibv_mr));
 
   send_message(conn);

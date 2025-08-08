@@ -56,9 +56,9 @@ peer disconnected.
 [LOG] destroy_connection called for conn=0x5638f0daaa70, id=0x5638f0da8140
 ```
 
-# 双边的oncompletion中，当wc status是flush error的时候，return，真的是正确的吗？
+# 是否注释on_connection有什么区别？
 
-果然不对，现在这样才是正确的，事实上我们需要取消on_conncetion的注释，这可能是作者留下的小关卡，看你是不是真的理解透彻了。
+发生在server.c的on_event中，之前是r=0，注释掉了r=on_connection，也就是不做回应，此时client直接被flush掉。注释之后会发送一条收到的ACK，此时client会收到server的一条消息。
 
 这是取消注释前后的对比：
 
@@ -130,14 +130,111 @@ int on_event(struct rdma_cm_event *event)
 }
 ```
 
-# 步骤
+# 数据结构
 
-## 状态转换
+## connection
+```
+struct connection {
+  struct rdma_cm_id *id;
+  struct ibv_qp *qp;    // queue pair
 
-Client: SS_INIT → SS_MR_SENT → SS_RDMA_SENT → SS_DONE_SENT
-Server: SS_INIT → SS_MR_SENT → SS_RDMA_SENT → SS_DONE_SENT
+  int connected;
 
-Both:   RS_INIT → RS_MR_RECV → RS_DONE_RECV
+  // mr memory region 锁页 防止被操作系统换出
+  struct ibv_mr *recv_mr;
+  struct ibv_mr *send_mr;
+  struct ibv_mr *rdma_local_mr;
+  struct ibv_mr *rdma_remote_mr;
+
+  struct ibv_mr peer_mr;
+
+  struct message *recv_msg;
+  struct message *send_msg;
+
+  char *rdma_local_region;
+  char *rdma_remote_region;
+
+  enum {
+    SS_INIT,
+    SS_MR_SENT,
+    SS_RDMA_SENT,
+    SS_DONE_SENT
+  } send_state;
+
+  enum {
+    RS_INIT,
+    RS_MR_RECV,
+    RS_DONE_RECV
+  } recv_state;
+};
+```
+
+简单来说有
+- 四种mr，收发普通mr，收发rdma mr
+- 两种msg 收发
+- 两种状态，收发
+
+## message
+```
+struct message {
+  enum {
+    MSG_MR,
+    MSG_DONE
+  } type;
+
+  union {
+    struct ibv_mr mr;
+  } data;
+};
+```
+message有两种
+1. MSG_MR消息：
+- 包含对方的Memory Region信息
+- 包括远程内存地址和访问key
+- 用于建立RDMA操作的目标
+2. MSG_DONE消息：
+- 通知对方RDMA操作已完成
+- 用于同步和协调
+
+发送方: send_msg (MSG_MR) → 网络 → 接收方: recv_msg
+发送方: send_msg (MSG_DONE) → 网络 → 接收方: recv_msg
+
+下面将说明，为什么MSG_MR中包含了mr addr length 和 rkey，之后的数据流向是如何的？
+
+## 什么是post？
+软件下发任务给硬件在RDMA中称为post
+- 对于接收方来说，软件告知硬件，接收到的数据放在哪里，称为post_recv
+- 对于发送方来说，软件告知硬件，准备发送addr+len的数据，称为post_send
+
+具体我们看一下void post_receives(struct connection *conn) 中需要准备哪些东西？
+
+```
+void post_receives(struct connection *conn)
+{
+  struct ibv_recv_wr wr, *bad_wr = NULL;
+  struct ibv_sge sge;
+
+  wr.wr_id = (uintptr_t)conn;
+  wr.next = NULL;
+  wr.sg_list = &sge;
+  wr.num_sge = 1;
+
+  sge.addr = (uintptr_t)conn->recv_msg;
+  sge.length = sizeof(struct message);
+  sge.lkey = conn->recv_mr->lkey;
+
+  TEST_NZ(ibv_post_recv(conn->qp, &wr, &bad_wr));
+}
+```
+
+可以看到最核心的内容就是sge，里面包含了首地址addr，内存块长度length，lkey
+
+- local key：MR注册好之后会返回LKEY和RKEY，LKEY用于自己访问自己，RKEY用于别人访问自己。一片内存区可以多次注册MR，每次可以设置不同的访问权限，每次都会返回不同的LKEY和RKEY。
+- MR注册来自于：ibv_reg_mr() 注册与Protection Domain关联的内存区域 (MR)。通过这样做，允许 RDMA 设备向该内存读取和写入数据。执行此注册需要一些时间，因此当需要快速响应时，不建议在数据路径中执行内存注册。
+
+
+
+# 解析
 
 ## 具体步骤
 1. 初始化，包括build_connection, build_context, register_memory（注册MR，用于msg双向写）
@@ -149,22 +246,136 @@ Both:   RS_INIT → RS_MR_RECV → RS_DONE_RECV
 2. 
 
 
-## 处理竞态
-
-情况1：Server先收到Client的MR
-Server: recv_state=RS_INIT → RS_MR_RECV (收到Client的MR)
-Server: send_state=SS_INIT (还没发送自己的MR)
-→ 触发 send_mr(conn)，Server发送自己的MR
-
-情况2：Client先发送，Server后发送
-Server: send_state=SS_INIT → SS_MR_SENT (已经发送了自己的MR)
-Server: recv_state=RS_INIT → RS_MR_RECV (收到Client的MR)  
-→ 不触发 send_mr()，避免重复发送
-
-
 
 ## 数据流
 
 Client ←→ Server: MSG_MR (双边，交换内存信息)
-Client  → Server: RDMA WRITE (单边，传输实际数据)
+
+Client.rdma_local_region → (单边RDMA Write) → Server.rdma_remote_region
+Server.rdma_local_region → (单边RDMA Write) → Client.rdma_remote_region
+
 Client ←→ Server: MSG_DONE (双边，确认完成)
+
+## 具体步骤和收发前后
+
+Write模式下：
+
+Client端:
+- rdma_local_region: "message from active/client side with pid XXX"  ← 数据准备在这里
+- rdma_remote_region: [空]
+
+Server端:
+- rdma_local_region: "message from passive/server side with pid XXX"  ← 数据准备在这里
+- rdma_remote_region: [空] → 等待接收Client的RDMA Write
+
+1. write模式下，get-local-message-region返回rdma local region
+2. client调用get-local-message-region，得到rdma local region，在这段buffer内写入想要传递的信息
+3. server端也会往自己的rdma-local-region中写入信息sprintf
+4. write模式下，client和server执行rdma write
+5. 执行完rdma write之后，client和server的rdma region如下：
+
+数据流向：
+
+Client ←→ Server: MSG_MR (双边，交换内存信息)
+
+Client.rdma_local_region → (单边RDMA Write) → Server.rdma_remote_region
+Server.rdma_local_region → (单边RDMA Write) → Client.rdma_remote_region
+
+Client ←→ Server: MSG_DONE (双边，确认完成)
+
+Client端:
+- rdma_local_region: "message from active/client side with pid XXX"  （原始数据）
+- rdma_remote_region: "message from passive/server side with pid XXX" （接收到server的数据）
+
+Server端:
+- rdma_local_region: "message from passive/server side with pid XXX"  （原始数据）
+- rdma_remote_region: "message from active/client side with pid XXX" (接收到Client数据)
+
+【write按照read的形式组织一下】
+---
+Read模式下；
+数据准备：
+```
+Client端内存：
+├─ rdma_local_region:  [空白]                                          ← 接收缓冲区
+└─ rdma_remote_region: "message from active/client side with pid XXX"  ← 准备给对方读取
+
+Server端内存：
+├─ rdma_local_region:  [空白]                                          ← 接收缓冲区  
+└─ rdma_remote_region: "message from passive/server side with pid XXX" ← 准备给对方读取
+```
+数据流向：
+```
+Client ←→ Server: MSG_MR (双边，交换内存信息)
+
+Client.rdma_local_region <- (单边RDMA Read) <- Server.rdma_remote_region
+Server.rdma_local_region <- (单边RDMA Read) <- Client.rdma_remote_region
+
+Client ←→ Server: MSG_DONE (双边，确认完成)
+```
+
+完成read后：
+```
+Client端内存：
+├─ rdma_local_region:  "message from passive/server side with pid XXX"  ← 从Server读取
+└─ rdma_remote_region: "message from active/client side with pid XXX"   ← 原始准备数据
+
+Server端内存：
+├─ rdma_local_region:  "message from active/client side with pid XXX"   ← 从Client读取
+└─ rdma_remote_region: "message from passive/server side with pid XXX"  ← 原始准备数据
+```
+## 状态转换
+
+Client: SS_INIT → SS_MR_SENT → SS_RDMA_SENT → SS_DONE_SENT
+Server: SS_INIT → SS_MR_SENT → SS_RDMA_SENT → SS_DONE_SENT
+
+Both:   RS_INIT → RS_MR_RECV → RS_DONE_RECV
+
+触发RDMA操作的条件：
+
+```
+if (conn->send_state == SS_MR_SENT && conn->recv_state == RS_MR_RECV) {
+    // 只有当这个条件满足时，才执行RDMA操作
+    // 执行IBV_WR_RDMA_WRITE
+}
+```
+
+接下来我们分析一下，状态变化的时序逻辑
+
+初始状态：
+```
+Client: send_state=SS_INIT, recv_state=RS_INIT
+Server: send_state=SS_INIT, recv_state=RS_INIT
+```
+连接建立后：
+
+Step 1 - Client主动发送MR：
+```
+// rdma-client.c 的 on_connection()
+send_mr(id->context);  // Client主动发送自己的MR信息
+```
+Step 2 - Client状态变化：
+```
+Client: send_state=SS_MR_SENT, recv_state=RS_INIT
+```
+Step 3 - Server接收到Client的MR：
+```
+// 在on_completion中
+if (conn->recv_msg->type == MSG_MR) {
+    conn->recv_state++;  // Server: recv_state变为RS_MR_RECV
+    
+    if (conn->send_state == SS_INIT)  // Server还没发送自己的MR：on_completion在server和client都会被执行，但是这里的if只有server会触发，因为这里client的ss已经是ss-mr-sent，而不是init了。具体来说，on_completion来自于pollcq轮询cq进程
+        send_mr(conn);  // Server发送自己的MR
+}
+```
+Step 4 - Server状态变化：
+```
+Server: send_state=SS_MR_SENT, recv_state=RS_MR_RECV  ← 条件满足！
+```
+Server先满足，此时会先执行rdma write
+
+Step 5 - Client接收到Server的MR：
+```
+Client: send_state=SS_MR_SENT, recv_state=RS_MR_RECV  ← 条件也满足！
+```
+
