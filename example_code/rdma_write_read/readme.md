@@ -107,7 +107,7 @@ peer disconnected.
 
 可以看到server发出了"connected. posting send...""send completed successfully"，而且client收到了message from server
 
-所以之前碰到flush就直接return的做法显然是不正确的。
+~~所以之前碰到flush就直接return的做法显然是不正确的。~~
 
 而之前为什么会遇到flush？主要是server这边on_connection被注释掉了,event过来之后，不能正确的进入on—connection case。所以server主动断开连接了，导致qp flush，导致client 收到flush error。
 
@@ -232,33 +232,16 @@ void post_receives(struct connection *conn)
 - local key：MR注册好之后会返回LKEY和RKEY，LKEY用于自己访问自己，RKEY用于别人访问自己。一片内存区可以多次注册MR，每次可以设置不同的访问权限，每次都会返回不同的LKEY和RKEY。
 - MR注册来自于：ibv_reg_mr() 注册与Protection Domain关联的内存区域 (MR)。通过这样做，允许 RDMA 设备向该内存读取和写入数据。执行此注册需要一些时间，因此当需要快速响应时，不建议在数据路径中执行内存注册。
 
-
-
 # 解析
 
 ## 具体步骤
 1. 初始化，包括build_connection, build_context, register_memory（注册MR，用于msg双向写）
 2. 
 
-## RDMA Buffer
-假设是client向server写的模式
-1. 在client中准备buffer：sprintf(get_local_message_region(id->context), "message from active/client side with pid %d",getpid());
-2. 
-
-
-
-## 数据流
-
-Client ←→ Server: MSG_MR (双边，交换内存信息)
-
-Client.rdma_local_region → (单边RDMA Write) → Server.rdma_remote_region
-Server.rdma_local_region → (单边RDMA Write) → Client.rdma_remote_region
-
-Client ←→ Server: MSG_DONE (双边，确认完成)
 
 ## 具体步骤和收发前后
 
-Write模式下：
+### Write模式下：
 
 Client端:
 - rdma_local_region: "message from active/client side with pid XXX"  ← 数据准备在这里
@@ -292,8 +275,8 @@ Server端:
 - rdma_remote_region: "message from active/client side with pid XXX" (接收到Client数据)
 
 【write按照read的形式组织一下】
----
-Read模式下；
+
+### Read模式下；
 数据准备：
 ```
 Client端内存：
@@ -324,6 +307,8 @@ Server端内存：
 ├─ rdma_local_region:  "message from active/client side with pid XXX"   ← 从Client读取
 └─ rdma_remote_region: "message from passive/server side with pid XXX"  ← 原始准备数据
 ```
+
+
 ## 状态转换
 
 Client: SS_INIT → SS_MR_SENT → SS_RDMA_SENT → SS_DONE_SENT

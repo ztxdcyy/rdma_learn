@@ -227,7 +227,7 @@ void on_completion(struct ibv_wc *wc)
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_SIGNALED;
     wr.wr.rdma.remote_addr = (uintptr_t)conn->peer_mr.addr;       // recv收到对端的MSG_MR，将其data.mr复制到自己的peer.mr中，这里再赋值给remoteaddr
-    wr.wr.rdma.rkey = conn->peer_mr.rkey;                         // 对方的lkey就是我们的rkey，对方rdmaengine check rkey==lkey就可以发起通信
+    wr.wr.rdma.rkey = conn->peer_mr.rkey;                         // 对方的rkey转发过来
 
     sge.addr = (uintptr_t)conn->rdma_local_region;          // 在rdma操作中，数据源总是rdma_local_region。但是在读写模式下，里面填充的内容不同。写模式下填充的是get_local_message_region；读模式下填充的是get_peer_message_region
     sge.length = RDMA_BUFFER_SIZE;
